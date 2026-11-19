@@ -65,15 +65,14 @@ public sealed class ProxyTests : IAsyncLifetime
         });
 
     [Theory]
-    [InlineData("/api/users/42", "userservice /api/users/42")]
-    [InlineData("/api/users", "userservice /api/users")]
-    [InlineData("/api/lobbies/abc/join", "lobbyservice /api/lobbies/abc/join")]
-    [InlineData("/api/games/1", "gameservice /api/games/1")]
-    [InlineData("/api/tracks/random", "musicservice /api/tracks/random")]
-    [InlineData("/api/statistics/me", "statisticservice /api/statistics/me")]
-    [InlineData("/hubs/lobby/negotiate", "lobbyservice /hubs/lobby/negotiate")]
-    [InlineData("/hubs/game/negotiate", "gameservice /hubs/game/negotiate")]
-    public async Task Route_ForwardsToTheRightService_WithThePathUnchanged(string path, string expected)
+    [InlineData("/api/userservice/users/42", "userservice /api/users/42")]
+    [InlineData("/api/lobbyservice/lobbies/abc/join", "lobbyservice /api/lobbies/abc/join")]
+    [InlineData("/api/gameservice/games/1", "gameservice /api/games/1")]
+    [InlineData("/api/musicservice/tracks/random", "musicservice /api/tracks/random")]
+    [InlineData("/api/statisticservice/statistics/me", "statisticservice /api/statistics/me")]
+    [InlineData("/api/gameservice/hubs/game/negotiate", "gameservice /api/hubs/game/negotiate")]
+    [InlineData("/api/userservice/example?id=1", "userservice /api/example")]
+    public async Task Route_ForwardsToTheService_WithoutTheServicePrefix(string path, string expected)
     {
         await using var edge = Edge();
 
@@ -85,6 +84,8 @@ public sealed class ProxyTests : IAsyncLifetime
 
     [Theory]
     [InlineData("/api/unknown/1")]
+    [InlineData("/api/users/1")]
+    [InlineData("/hubs/game")]
     [InlineData("/swagger")]
     public async Task UnknownPath_Returns404(string path)
     {
@@ -95,20 +96,22 @@ public sealed class ProxyTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    [Fact]
-    public async Task Health_IsAnsweredByTheEdgeItself()
+    [Theory]
+    [InlineData("/api/edge/health")]
+    [InlineData("/health")]
+    public async Task Health_IsAnsweredByTheEdgeItself(string path)
     {
         await using var edge = Edge();
 
-        var response = await edge.CreateClient().GetAsync("/health");
+        var response = await edge.CreateClient().GetAsync(path);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
     }
 
     [Theory]
-    [InlineData("/hubs/lobby", "lobbyservice")]
-    [InlineData("/hubs/game", "gameservice")]
+    [InlineData("/api/lobbyservice/hubs/lobby", "lobbyservice")]
+    [InlineData("/api/gameservice/hubs/game", "gameservice")]
     public async Task Hub_WebSocketIsProxiedToTheRightService(string path, string expected)
     {
         // The in-memory test server cannot do a real HTTP upgrade, so this test runs the edge on Kestrel.
@@ -135,9 +138,9 @@ public sealed class ProxyTests : IAsyncLifetime
         await using var edge = Edge(permitLimit: 2);
         var client = edge.CreateClient();
 
-        await client.GetAsync("/api/users/1");
-        await client.GetAsync("/api/users/1");
-        var third = await client.GetAsync("/api/users/1");
+        await client.GetAsync("/api/userservice/users/1");
+        await client.GetAsync("/api/userservice/users/1");
+        var third = await client.GetAsync("/api/userservice/users/1");
 
         Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
     }

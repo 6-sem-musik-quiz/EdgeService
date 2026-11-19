@@ -40,7 +40,11 @@ app.UseForwardedHeaders();
 app.UseWebSockets(); // SignalR on /hubs/* goes through as WebSockets
 app.UseRateLimiter();
 
+// The edge's own endpoints live under /api/edge (public), plus /health for the Kubernetes probes.
+app.MapHealthChecks("/api/edge/health");
 app.MapHealthChecks("/health");
+
+// /api/<service>/<rest> -> http://<service>:8080/api/<rest> (routes in appsettings.json).
 app.MapReverseProxy();
 
 app.Run();
