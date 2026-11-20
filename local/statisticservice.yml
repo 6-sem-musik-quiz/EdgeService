@@ -1,0 +1,6 @@
+# Sends /api/statisticservice/* to StatisticService running on this machine (its own docker compose, port 5003).
+services:
+  edge:
+    environment:
+      ReverseProxy__Clusters__statisticservice__Destinations__d1__Address: http://host.docker.internal:5003/
+      ReverseProxy__Routes__statisticservice__Transforms__0__PathPattern: "/api/{**rest}"

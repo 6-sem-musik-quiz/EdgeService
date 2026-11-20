@@ -1,0 +1,6 @@
+# Sends /api/musicservice/* to MusicService running on this machine (its own docker compose, port 5002).
+services:
+  edge:
+    environment:
+      ReverseProxy__Clusters__musicservice__Destinations__d1__Address: http://host.docker.internal:5002/
+      ReverseProxy__Routes__musicservice__Transforms__0__PathPattern: "/api/{**rest}"

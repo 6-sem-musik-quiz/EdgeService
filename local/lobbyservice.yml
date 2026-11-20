@@ -1,0 +1,6 @@
+# Sends /api/lobbyservice/* to LobbyService running on this machine (its own docker compose, port 5004).
+services:
+  edge:
+    environment:
+      ReverseProxy__Clusters__lobbyservice__Destinations__d1__Address: http://host.docker.internal:5004/
+      ReverseProxy__Routes__lobbyservice__Transforms__0__PathPattern: "/api/{**rest}"

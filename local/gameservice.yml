@@ -1,0 +1,6 @@
+# Sends /api/gameservice/* to GameService running on this machine (its own docker compose, port 5005).
+services:
+  edge:
+    environment:
+      ReverseProxy__Clusters__gameservice__Destinations__d1__Address: http://host.docker.internal:5005/
+      ReverseProxy__Routes__gameservice__Transforms__0__PathPattern: "/api/{**rest}"

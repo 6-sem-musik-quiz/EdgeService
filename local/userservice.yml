@@ -1,0 +1,6 @@
+# Sends /api/userservice/* to UserService running on this machine (its own docker compose, port 5001).
+services:
+  edge:
+    environment:
+      ReverseProxy__Clusters__userservice__Destinations__d1__Address: http://host.docker.internal:5001/
+      ReverseProxy__Routes__userservice__Transforms__0__PathPattern: "/api/{**rest}"
