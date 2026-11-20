@@ -63,8 +63,8 @@ browser -> Frontend :5006 -> edge :5000 -> your service :500x          (local ov
                                        \-> https://quiz.munkcloud.dk  (every other service, live data)
 ```
 
-1. **The service you are changing**, in its own repo (local database, or the real one with
-   `docker-compose.realdb.yml`):
+1. **The service you are changing**, in its own repo (it uses the real cluster database; see
+   that repo's README for the one-time `.env` setup):
    ```powershell
    docker compose up --build          # e.g. UserService on :5001
    ```
