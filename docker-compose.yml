@@ -1,0 +1,30 @@
+# Runs the edge locally on http://localhost:5000.
+#
+# By default every route goes to the REAL cluster through https://quiz.munkcloud.dk
+# (live data). Add one override per service you run locally to send that service's
+# route to your machine instead, e.g. UserService from its own repo on port 5001:
+#
+#   docker compose -f docker-compose.yml -f local/userservice.yml up --build
+#
+# Overrides stack: add -f local/musicservice.yml as well to run both locally.
+# See README, "Testing a feature locally".
+services:
+  edge:
+    build: .
+    ports:
+      - "5000:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # Real cluster: keep the /api/<service>/ prefix, the real edge strips it.
+      ReverseProxy__Clusters__userservice__Destinations__d1__Address: https://quiz.munkcloud.dk/
+      ReverseProxy__Routes__userservice__Transforms__0__PathPattern: "/api/userservice/{**rest}"
+      ReverseProxy__Clusters__musicservice__Destinations__d1__Address: https://quiz.munkcloud.dk/
+      ReverseProxy__Routes__musicservice__Transforms__0__PathPattern: "/api/musicservice/{**rest}"
+      ReverseProxy__Clusters__statisticservice__Destinations__d1__Address: https://quiz.munkcloud.dk/
+      ReverseProxy__Routes__statisticservice__Transforms__0__PathPattern: "/api/statisticservice/{**rest}"
+      ReverseProxy__Clusters__lobbyservice__Destinations__d1__Address: https://quiz.munkcloud.dk/
+      ReverseProxy__Routes__lobbyservice__Transforms__0__PathPattern: "/api/lobbyservice/{**rest}"
+      ReverseProxy__Clusters__gameservice__Destinations__d1__Address: https://quiz.munkcloud.dk/
+      ReverseProxy__Routes__gameservice__Transforms__0__PathPattern: "/api/gameservice/{**rest}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

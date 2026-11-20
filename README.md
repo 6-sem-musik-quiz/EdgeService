@@ -52,6 +52,44 @@ dotnet run --project src/EdgeService.Api
 The edge listens on `http://localhost:5000` and forwards to the services on their own
 local ports (`appsettings.Development.json`). Start the services you need first.
 
+## Testing a feature locally (frontend + edge + one service)
+
+Run the frontend, the edge and the service you are changing in Docker. Every other service
+stays the real one in the cluster. Each repo has its own compose file, and the containers
+reach each other through your machine's ports (`host.docker.internal`).
+
+```
+browser -> Frontend :5006 -> edge :5000 -> your service :500x          (local override)
+                                       \-> https://quiz.munkcloud.dk  (every other service, live data)
+```
+
+1. **The service you are changing**, in its own repo (it uses the real cluster database; see
+   that repo's README for the one-time `.env` setup):
+   ```powershell
+   docker compose up --build          # e.g. UserService on :5001
+   ```
+2. **The edge**, here, with one override per service you run locally:
+   ```powershell
+   docker compose -f docker-compose.yml -f local/userservice.yml up --build
+   ```
+   Overrides stack, e.g. `-f local/userservice.yml -f local/musicservice.yml`.
+   Without any override the edge forwards everything to the real cluster.
+3. **The frontend**, in the Frontend repo:
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.local-edge.yml up --build
+   ```
+4. Open http://localhost:5006.
+
+| Override | Sends `/api/<service>/*` to |
+|---|---|
+| `local/userservice.yml` | `localhost:5001` |
+| `local/musicservice.yml` | `localhost:5002` |
+| `local/statisticservice.yml` | `localhost:5003` |
+| `local/lobbyservice.yml` | `localhost:5004` |
+| `local/gameservice.yml` | `localhost:5005` |
+
+Calls to services that are not overridden hit the **real** data through `https://quiz.munkcloud.dk`.
+
 ## Build and test
 
 ```bash
