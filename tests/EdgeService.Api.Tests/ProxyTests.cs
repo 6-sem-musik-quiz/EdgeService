@@ -22,7 +22,11 @@ public sealed class ProxyTests : IAsyncLifetime
     {
         foreach (var service in Services)
         {
-            var backend = WebApplication.CreateBuilder().Build();
+            var builder = WebApplication.CreateBuilder();
+            // Like MusicService's upload endpoint, the fake backends take any body size,
+            // so a 413 in a test can only come from the edge.
+            builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = null);
+            var backend = builder.Build();
             backend.Urls.Add("http://127.0.0.1:0");
             backend.UseWebSockets();
             backend.Run(async context =>
@@ -36,6 +40,7 @@ public sealed class ProxyTests : IAsyncLifetime
                     await socket.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
                     return;
                 }
+                await context.Request.Body.CopyToAsync(Stream.Null);
                 // Answers "<service> <path>" so a test can see where a request landed.
                 await context.Response.WriteAsync($"{service} {context.Request.Path}");
             });
@@ -130,6 +135,52 @@ public sealed class ProxyTests : IAsyncLifetime
         // Finish the close handshake, or the servers wait for the socket when they shut down.
         await socket.ReceiveAsync(buffer, CancellationToken.None);
         await socket.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+    }
+
+    // Above Kestrel's default MaxRequestBodySize (30,000,000 bytes, ~28.6 MiB).
+    private const int LargeBodyBytes = 31 * 1024 * 1024;
+
+    [Theory]
+    [InlineData("/api/musicservice/playlists/7/songs", "musicservice /api/playlists/7/songs")]
+    [InlineData("/api/musicservice/playlists/3fa85f64-5717-4562-b3fc-2c963f66afa6/songs", "musicservice /api/playlists/3fa85f64-5717-4562-b3fc-2c963f66afa6/songs")]
+    public async Task SongUpload_AcceptsBodiesOverTheDefaultLimit(string path, string expected)
+    {
+        // The in-memory test server has no body size limit, so this test runs the edge on Kestrel.
+        await using var edge = Edge();
+        edge.UseKestrel(0);
+        edge.StartServer();
+
+        var response = await edge.CreateClient().PostAsync(path, LargeBody());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(expected, await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("/api/userservice/users")]
+    [InlineData("/api/musicservice/tracks")]
+    [InlineData("/api/musicservice/playlists/7")]
+    [InlineData("/api/musicservice/playlists/7/songs/extra")]
+    public async Task OtherRoutes_KeepTheDefaultBodyLimit(string path)
+    {
+        await using var edge = Edge();
+        edge.UseKestrel(0);
+        edge.StartServer();
+
+        // With "Expect: 100-continue" the client waits for the edge before sending the body, so it
+        // reads the 413 instead of racing Kestrel closing the connection mid-upload.
+        using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = LargeBody() };
+        request.Headers.ExpectContinue = true;
+        var response = await edge.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+    }
+
+    private static ByteArrayContent LargeBody()
+    {
+        var content = new ByteArrayContent(new byte[LargeBodyBytes]);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
+        return content;
     }
 
     [Fact]
