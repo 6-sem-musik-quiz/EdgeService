@@ -1,4 +1,5 @@
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -40,6 +41,20 @@ app.UseForwardedHeaders();
 app.UseWebSockets(); // SignalR on /hubs/* goes through as WebSockets
 app.UseRateLimiter();
 
+// Kestrel rejects request bodies over ~28.6 MiB with 413. Admin song uploads
+// (POST /api/musicservice/playlists/{id}/songs, multipart mp3) are bigger, so only that
+// route gets a higher limit; every other route keeps Kestrel's default.
+// Cloudflare's free plan still caps a request at 100 MB in front of us.
+app.Use((context, next) =>
+{
+    if (IsSongUpload(context.Request)
+        && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+    {
+        limit.MaxRequestBodySize = SongUploadMaxBytes;
+    }
+    return next(context);
+});
+
 // The edge's own endpoints live under /api/edge (public), plus /health for the Kubernetes probes.
 app.MapHealthChecks("/api/edge/health");
 app.MapHealthChecks("/health");
@@ -49,5 +64,18 @@ app.MapReverseProxy();
 
 app.Run();
 
+static bool IsSongUpload(HttpRequest request)
+{
+    if (!HttpMethods.IsPost(request.Method))
+        return false;
+    // /api/musicservice/playlists/{id}/songs
+    var segments = request.Path.Value?.Trim('/').Split('/') ?? [];
+    return segments is ["api", "musicservice", "playlists", { Length: > 0 }, "songs"];
+}
+
 // Exposed so integration tests can use WebApplicationFactory<Program>.
-public partial class Program;
+public partial class Program
+{
+    /// <summary>Largest song upload the edge lets through (200 MB, above Cloudflare's 100 MB cap).</summary>
+    public const long SongUploadMaxBytes = 200L * 1024 * 1024;
+}

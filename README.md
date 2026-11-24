@@ -40,6 +40,12 @@ and a test case in `ProxyTests`.
   `appsettings.json`), then `429 Too Many Requests`.
 - **Forwarded headers**: the client's real IP and `https` from Cloudflare are passed on to the
   services as `X-Forwarded-For` / `X-Forwarded-Proto`.
+- **Request body size**: Kestrel's default limit (30,000,000 bytes, ~28.6 MiB, then
+  `413 Payload Too Large`) applies to every route except admin song uploads,
+  `POST /api/musicservice/playlists/{id}/songs`, which may send up to 200 MB
+  (`SongUploadMaxBytes` in `Program.cs`). In production Cloudflare's free plan still caps
+  every request body at **100 MB** before it reaches the tunnel, so that is the real
+  maximum for an upload; it is not configurable on the free plan.
 
 Authentication is not done here yet.
 
@@ -97,7 +103,8 @@ dotnet build -c Release
 dotnet test -c Release
 ```
 
-The tests start fake backends and check every route, the WebSocket path, 404 and the rate limit.
+The tests start fake backends and check every route, the WebSocket path, 404, the rate limit
+and the larger body limit on the song-upload route.
 
 ## Deploy
 
