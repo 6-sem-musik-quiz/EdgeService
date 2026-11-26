@@ -36,6 +36,13 @@ and a test case in `ProxyTests`.
 
 - **Routing** by service name (YARP, config in `appsettings.json` under `ReverseProxy`).
 - **WebSockets** for SignalR hubs.
+- **GameService sharding** ([ADR-0004](https://github.com/6-sem-musik-quiz/Platform/blob/main/docs/decisions/0004-gameservice-sharding.md)):
+  with `GameSharding:ShardCount` (env `GameSharding__ShardCount`) above 1, every game's traffic goes to the
+  GameService pod that owns it, `shard-k` = `FNV-1a-32(lowercase gameId) % N`, found from `?gameId=` (hub URL)
+  or `/games/{gameId}` in the path. Shard k's address is `GameSharding:AddressTemplate`
+  (default `http://gameservice-{0}.gameservice-headless:8080/`). Requests without a gameId go to any shard;
+  if the owner is down the edge answers 503. N must equal GameService's `Sharding__ShardCount`. Default 1:
+  the `gameservice` cluster keeps its single destination.
 - **Rate limiting**: 100 requests per 10 seconds per client IP (`RateLimit` in
   `appsettings.json`), then `429 Too Many Requests`.
 - **Forwarded headers**: the client's real IP and `https` from Cloudflare are passed on to the
