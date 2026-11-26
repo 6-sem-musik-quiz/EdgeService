@@ -7,112 +7,110 @@ using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace EdgeService.Api.Tests;
 
-// ADR-0004: with GameSharding:ShardCount = 3, a request for a game goes to shard
-// FNV-1a-32(lowercase gameId) % 3. Three fake GameService pods answer "shard-<k> <path>".
+// ADR-0004 / gameservice.gamehub@1.4: the first two hex characters of the gameId name the GameService
+// pod. Three fake pods answer "shard-<k> <path>", and a fake normal Service answers "any <path>".
 public sealed class GameShardingTests : IAsyncLifetime
 {
-    private const int Shards = 3;
-    private readonly List<WebApplication> _pods = [];
+    private const int Pods = 3;
+    private readonly List<WebApplication> _backends = [];
+    private readonly List<string> _podAddresses = [];
+    private string _anyAddress = "";
 
     public async Task InitializeAsync()
     {
-        for (var k = 0; k < Shards; k++)
+        for (var k = 0; k <= Pods; k++)
         {
-            var name = $"shard-{k}";
-            var pod = WebApplication.CreateBuilder().Build();
-            pod.Urls.Add("http://127.0.0.1:0");
-            pod.Run(context => context.Response.WriteAsync($"{name} {context.Request.Path}"));
-            await pod.StartAsync();
-            _pods.Add(pod);
+            var name = k < Pods ? $"shard-{k}" : "any";
+            var backend = WebApplication.CreateBuilder().Build();
+            backend.Urls.Add("http://127.0.0.1:0");
+            backend.Run(context => context.Response.WriteAsync($"{name} {context.Request.Path}"));
+            await backend.StartAsync();
+            _backends.Add(backend);
+            if (k < Pods) _podAddresses.Add(backend.Urls.First() + "/");
+            else _anyAddress = backend.Urls.First() + "/";
         }
     }
 
     public async Task DisposeAsync()
     {
-        foreach (var pod in _pods)
+        foreach (var backend in _backends)
         {
-            await pod.StopAsync();
-            await pod.DisposeAsync();
+            await backend.StopAsync();
+            await backend.DisposeAsync();
         }
     }
 
-    private HttpClient Edge(int shardCount = Shards) =>
+    private HttpClient Edge(bool enabled = true, int maxShards = Pods) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production");
-            builder.UseSetting("GameSharding:ShardCount", shardCount.ToString());
-            for (var k = 0; k < _pods.Count; k++)
-                builder.UseSetting($"GameSharding:Addresses:{k}", _pods[k].Urls.First() + "/");
-            // With one shard the cluster keeps its own destination: point it at pod 0.
-            builder.UseSetting("ReverseProxy:Clusters:gameservice:Destinations:d1:Address", _pods[0].Urls.First() + "/");
+            builder.UseSetting("GameSharding:Enabled", enabled.ToString());
+            builder.UseSetting("GameSharding:MaxShards", maxShards.ToString());
+            builder.UseSetting("GameSharding:AnyAddress", _anyAddress);
+            for (var k = 0; k < _podAddresses.Count; k++)
+                builder.UseSetting($"GameSharding:Addresses:{k}", _podAddresses[k]);
+            // Disabled: the cluster keeps its own destination; point it at the "any" backend.
+            builder.UseSetting("ReverseProxy:Clusters:gameservice:Destinations:d1:Address", _anyAddress);
         }).CreateClient();
 
-    // Same reference values as GameService's GameShardTests (computed from the ADR in Python).
+    private static Guid GameOn(int pod) => Guid.Parse(pod.ToString("x2") + Guid.NewGuid().ToString("D")[2..]);
+
     [Theory]
-    [InlineData("00000000-0000-0000-0000-000000000000", 3192360657u)]
-    [InlineData("3F1C2A8E-0000-4000-8000-000000000001", 2145607093u)]
-    public void Fnv1a32_MatchesTheContract(string gameId, uint expected) =>
-        Assert.Equal(expected, GameShard.Fnv1a32(Guid.Parse(gameId)));
+    [InlineData("00a7f3c1-5b2e-4d0a-9c1f-7e3b2a1d4c5e", 0)]
+    [InlineData("02a7f3c1-5b2e-4d0a-9c1f-7e3b2a1d4c5e", 2)]
+    [InlineData("1Fa7f3c1-5b2e-4d0a-9c1f-7e3b2a1d4c5e", 31)]
+    [InlineData("ffa7f3c1-5b2e-4d0a-9c1f-7e3b2a1d4c5e", 255)]
+    public void Of_ReadsTheFirstTwoHexCharacters(string gameId, int expected) =>
+        Assert.Equal(expected, GameShard.Of(Guid.Parse(gameId)));
 
-    [Fact]
-    public async Task HubConnection_WithGameId_GoesToTheGamesShard()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task HubConnection_GoesToThePodInTheGameId(int pod)
     {
         using var edge = Edge();
+        var gameId = GameOn(pod);
 
-        for (var i = 0; i < 30; i++)
-        {
-            var gameId = Guid.NewGuid();
-            var response = await edge.PostAsync($"/api/gameservice/hubs/game/negotiate?gameId={gameId}&negotiateVersion=1", null);
-            var body = await response.Content.ReadAsStringAsync();
+        var response = await edge.PostAsync($"/api/gameservice/hubs/game/negotiate?gameId={gameId}&negotiateVersion=1", null);
 
-            Assert.Equal($"shard-{GameShard.Of(gameId, Shards)} /api/hubs/game/negotiate", body);
-        }
+        Assert.Equal($"shard-{pod} /api/hubs/game/negotiate", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task RestCall_ForOneGame_GoesToThePodInTheGameId(int pod)
+    {
+        using var edge = Edge();
+        var gameId = GameOn(pod);
+
+        Assert.Equal($"shard-{pod} /api/games/{gameId}", await edge.GetStringAsync($"/api/gameservice/games/{gameId}"));
     }
 
     [Fact]
-    public async Task RestCall_ForOneGame_GoesToTheGamesShard()
+    public async Task WithoutGameId_GoesToTheNormalService()
     {
         using var edge = Edge();
 
-        for (var i = 0; i < 30; i++)
-        {
-            var gameId = Guid.NewGuid();
-            var body = await edge.GetStringAsync($"/api/gameservice/games/{gameId}");
-
-            Assert.Equal($"shard-{GameShard.Of(gameId, Shards)} /api/games/{gameId}", body);
-        }
+        Assert.Equal("any /api/games", await (await edge.PostAsync("/api/gameservice/games", null)).Content.ReadAsStringAsync());
     }
 
     [Fact]
-    public async Task UpperCaseGameId_GoesToTheSameShard()
+    public async Task GameIdAboveMaxShards_Gets503()
     {
-        using var edge = Edge();
-        var gameId = Guid.NewGuid();
+        using var edge = Edge(maxShards: Pods);
 
-        var lower = await edge.GetStringAsync($"/api/gameservice/games/{gameId}");
-        var upper = await edge.GetStringAsync($"/api/gameservice/games/{gameId.ToString().ToUpperInvariant()}");
+        var response = await edge.GetAsync($"/api/gameservice/games/{GameOn(Pods)}"); // pod 3 of 0..2
 
-        Assert.Equal(lower.Split(' ')[0], upper.Split(' ')[0]);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
     [Fact]
-    public async Task WithoutGameId_AnyShardAnswers()
+    public async Task Disabled_KeepsTheConfiguredDestination()
     {
-        using var edge = Edge();
+        using var edge = Edge(enabled: false);
 
-        var body = await edge.GetStringAsync("/api/gameservice/health");
-
-        Assert.Matches(@"^shard-[0-2] /api/health$", body);
-    }
-
-    [Fact]
-    public async Task OneShard_KeepsTheConfiguredDestination()
-    {
-        using var edge = Edge(shardCount: 1);
-
-        var response = await edge.GetAsync($"/api/gameservice/games/{Guid.NewGuid()}?gameId={Guid.NewGuid()}");
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.StartsWith("shard-0 ", await response.Content.ReadAsStringAsync());
+        Assert.StartsWith("any ", await edge.GetStringAsync($"/api/gameservice/games/{GameOn(2)}"));
     }
 }

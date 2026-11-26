@@ -11,7 +11,7 @@ builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
     .AddConfigFilter<GameShardConfigFilter>();
 
-// ADR-0004: with GameSharding:ShardCount > 1, GameService calls go to the pod that owns the game.
+// ADR-0004: with GameSharding:Enabled, GameService calls go to the pod named in the gameId.
 builder.Services.Configure<GameShardingOptions>(builder.Configuration.GetSection(GameShardingOptions.SectionName));
 builder.Services.AddSingleton<ILoadBalancingPolicy, GameShardPolicy>();
 

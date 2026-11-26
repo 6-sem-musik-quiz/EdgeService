@@ -1,4 +1,4 @@
-using System.Text;
+using System.Globalization;
 using Microsoft.Extensions.Options;
 using Yarp.ReverseProxy.Configuration;
 using Yarp.ReverseProxy.LoadBalancing;
@@ -6,48 +6,48 @@ using Yarp.ReverseProxy.Model;
 
 namespace EdgeService.Api;
 
-// ADR-0004 (Platform, SCRUM-129): every game lives in one GameService pod (StatefulSet
-// gameservice-0..N-1), and the edge sends everything for a game to that pod:
-//   shard(gameId) = FNV-1a-32(UTF-8(gameId.ToString("D").ToLowerInvariant())) % N
-// The same function as GameService's GameShard; N must be the same in both (Sharding__ShardCount there,
-// GameSharding__ShardCount here).
+// ADR-0004 (Platform, SCRUM-129, gameservice.gamehub@1.4): every game lives in the GameService pod that
+// created it (StatefulSet gameservice-0..N-1), and that pod's number is the first two hex characters of
+// the gameId (02a7f3c1-... = gameservice-2). The edge reads it and sends the game's traffic there.
+// The edge does not need the number of pods, only an upper bound (MaxShards).
 
-// The "GameSharding" section (env GameSharding__ShardCount ...).
+// The "GameSharding" section (env GameSharding__Enabled ...).
 public sealed class GameShardingOptions
 {
     public const string SectionName = "GameSharding";
 
-    // N. 1 = no sharding: the gameservice cluster keeps its one destination from "ReverseProxy".
-    public int ShardCount { get; set; } = 1;
+    // false = the gameservice cluster keeps its one destination from "ReverseProxy" (one pod, local dev).
+    public bool Enabled { get; set; }
 
-    // Address of shard k; {0} is k. The headless Service gives every StatefulSet pod its own name.
+    // Destinations shard-0..MaxShards-1 are created. At least the HPA's maxReplicas; at most 256.
+    public int MaxShards { get; set; } = 16;
+
+    // Address of pod k; {0} is k. The headless Service gives every StatefulSet pod its own name.
     public string AddressTemplate { get; set; } = "http://gameservice-{0}.gameservice-headless:8080/";
+
+    // For requests without a gameId: the normal Service, which only sends to ready pods.
+    public string AnyAddress { get; set; } = "http://gameservice:8080/";
 
     // Optional explicit addresses, index = shard (tests use these instead of the template).
     public List<string> Addresses { get; set; } = [];
 
     public string AddressOf(int shard) =>
-        shard < Addresses.Count ? Addresses[shard] : string.Format(AddressTemplate, shard);
+        shard < Addresses.Count ? Addresses[shard] : string.Format(CultureInfo.InvariantCulture, AddressTemplate, shard);
 }
 
 public static class GameShard
 {
     public const string ClusterId = "gameservice";
     public const string PolicyName = "GameShard";
+    public const string AnyDestination = "any";
 
-    public static uint Fnv1a32(Guid gameId)
-    {
-        var hash = 2166136261u;
-        foreach (var b in Encoding.UTF8.GetBytes(gameId.ToString("D").ToLowerInvariant()))
-            hash = unchecked((hash ^ b) * 16777619u);
-        return hash;
-    }
-
-    public static int Of(Guid gameId, int shardCount) => (int)(Fnv1a32(gameId) % (uint)shardCount);
+    // The first two hex characters of the gameId ("D" format), 0-255.
+    public static int Of(Guid gameId) =>
+        int.Parse(gameId.ToString("D").AsSpan(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
 
     public static string DestinationId(int shard) => $"shard-{shard}";
 
-    // gameservice.gamehub@1.3: ?gameId= on the hub URL (negotiate and WebSocket keep the query).
+    // gameservice.gamehub@1.3+: ?gameId= on the hub URL (negotiate and WebSocket keep the query).
     // REST calls for one game: /api/gameservice/games/{gameId}/...
     public static Guid? GameIdOf(HttpRequest request)
     {
@@ -63,20 +63,24 @@ public static class GameShard
     }
 }
 
-// With ShardCount > 1, replaces the gameservice cluster's destinations with shard-0..N-1 and gives it
-// the GameShard policy. With 1 the configuration is left as it is.
+// When enabled, replaces the gameservice cluster's destinations with shard-0..MaxShards-1 plus "any"
+// and gives it the GameShard policy. Disabled: the configuration is left as it is.
 public sealed class GameShardConfigFilter(IOptions<GameShardingOptions> options) : IProxyConfigFilter
 {
     public ValueTask<ClusterConfig> ConfigureClusterAsync(ClusterConfig cluster, CancellationToken cancel)
     {
         var sharding = options.Value;
-        if (cluster.ClusterId != GameShard.ClusterId || sharding.ShardCount <= 1)
+        if (cluster.ClusterId != GameShard.ClusterId || !sharding.Enabled)
             return ValueTask.FromResult(cluster);
+        if (sharding.MaxShards is < 1 or > 256)
+            throw new InvalidOperationException($"GameSharding:MaxShards must be 1..256, was {sharding.MaxShards}.");
 
-        var destinations = Enumerable.Range(0, sharding.ShardCount).ToDictionary(
+        var destinations = Enumerable.Range(0, sharding.MaxShards).ToDictionary(
             GameShard.DestinationId,
             shard => new DestinationConfig { Address = sharding.AddressOf(shard) },
             StringComparer.OrdinalIgnoreCase);
+        destinations[GameShard.AnyDestination] = new DestinationConfig { Address = sharding.AnyAddress };
+
         return ValueTask.FromResult(cluster with
         {
             Destinations = destinations,
@@ -88,25 +92,21 @@ public sealed class GameShardConfigFilter(IOptions<GameShardingOptions> options)
         ValueTask.FromResult(route);
 }
 
-// Picks the shard that owns the request's game. Without a gameId (e.g. LobbyService-style calls that
-// create a game) any shard will do. If the owner is not available, no destination: YARP answers 503,
-// which is better than a pod that does not know the game.
-public sealed class GameShardPolicy(IOptions<GameShardingOptions> options) : ILoadBalancingPolicy
+// Picks the pod named in the request's gameId. Without a gameId: "any" (the normal Service).
+// A gameId naming a pod above MaxShards gets no destination, and YARP answers 503.
+public sealed class GameShardPolicy : ILoadBalancingPolicy
 {
     public string Name => GameShard.PolicyName;
 
     public DestinationState? PickDestination(HttpContext context, ClusterState cluster,
         IReadOnlyList<DestinationState> availableDestinations)
     {
-        if (availableDestinations.Count == 0)
-            return null;
+        var wanted = GameShard.GameIdOf(context.Request) is { } gameId
+            ? GameShard.DestinationId(GameShard.Of(gameId))
+            : GameShard.AnyDestination;
 
-        if (GameShard.GameIdOf(context.Request) is not { } gameId)
-            return availableDestinations[Random.Shared.Next(availableDestinations.Count)];
-
-        var owner = GameShard.DestinationId(GameShard.Of(gameId, options.Value.ShardCount));
         foreach (var destination in availableDestinations)
-            if (string.Equals(destination.DestinationId, owner, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(destination.DestinationId, wanted, StringComparison.OrdinalIgnoreCase))
                 return destination;
         return null;
     }
