@@ -1,3 +1,5 @@
+using EdgeService.Api;
+using Yarp.ReverseProxy.LoadBalancing;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -6,7 +8,12 @@ var builder = WebApplication.CreateBuilder(args);
 
 // The routes and backend addresses live in appsettings.json under "ReverseProxy".
 builder.Services.AddReverseProxy()
-    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
+    .AddConfigFilter<GameShardConfigFilter>();
+
+// ADR-0004: with GameSharding:ShardCount > 1, GameService calls go to the pod that owns the game.
+builder.Services.Configure<GameShardingOptions>(builder.Configuration.GetSection(GameShardingOptions.SectionName));
+builder.Services.AddSingleton<ILoadBalancingPolicy, GameShardPolicy>();
 
 builder.Services.AddHealthChecks();
 
