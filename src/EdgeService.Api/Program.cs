@@ -1,6 +1,10 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
+using OpenTelemetry;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,6 +38,26 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0,
             }));
 });
+
+// SCRUM-173: traces, metrics and logs over OTLP. The collector address comes from
+// OTEL_EXPORTER_OTLP_ENDPOINT (default http://localhost:4317) and the service name from OTEL_SERVICE_NAME
+// (both set by the gitops chart). The edge is the first hop, so a request's trace starts here; the
+// forwarded call carries the traceparent header, and the service behind joins the same trace.
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation(o => o.Filter = ctx =>
+            !ctx.Request.Path.StartsWithSegments("/health") && !ctx.Request.Path.StartsWithSegments("/api/edge/health"))
+        .AddSource("Yarp.ReverseProxy")   // the forwarding step
+        .AddSource("System.Net.Http"))    // the call to the backend
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()   // http.server.request.duration, per route
+        .AddMeter("System.Net.Http", "System.Runtime", "Microsoft.AspNetCore.RateLimiting"))
+    .WithLogging(logging => { }, options =>
+    {
+        options.IncludeFormattedMessage = true;
+        options.IncludeScopes = true;
+    })
+    .UseOtlpExporter();
 
 var app = builder.Build();
 
