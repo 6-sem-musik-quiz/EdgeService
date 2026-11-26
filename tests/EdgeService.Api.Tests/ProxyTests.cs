@@ -41,6 +41,8 @@ public sealed class ProxyTests : IAsyncLifetime
                     return;
                 }
                 await context.Request.Body.CopyToAsync(Stream.Null);
+                // SCRUM-173: hands back the trace context the edge forwarded.
+                context.Response.Headers["X-Seen-Traceparent"] = context.Request.Headers["traceparent"].ToString();
                 // Answers "<service> <path>" so a test can see where a request landed.
                 await context.Response.WriteAsync($"{service} {context.Request.Path}");
             });
@@ -181,6 +183,22 @@ public sealed class ProxyTests : IAsyncLifetime
         var content = new ByteArrayContent(new byte[LargeBodyBytes]);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
         return content;
+    }
+
+    // SCRUM-173: the edge is the first hop. The backend joins the caller's trace, with the edge's own span as parent.
+    [Fact]
+    public async Task ForwardedRequest_CarriesTheTrace_WithTheEdgeAsParent()
+    {
+        const string traceId = "4bf92f3577b34da6a3ce929d0e0e4736", callerSpan = "00f067aa0ba902b7";
+        await using var edge = Edge();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/gameservice/games/1");
+        request.Headers.Add("traceparent", $"00-{traceId}-{callerSpan}-01");
+
+        var response = await edge.CreateClient().SendAsync(request);
+
+        var seen = response.Headers.GetValues("X-Seen-Traceparent").Single().Split('-');
+        Assert.Equal(traceId, seen[1]);
+        Assert.NotEqual(callerSpan, seen[2]);
     }
 
     [Fact]

@@ -52,6 +52,15 @@ and a test case in `ProxyTests`.
 
 Authentication is not done here yet.
 
+## Observability (SCRUM-173)
+
+Traces, metrics and logs go over OTLP (`UseOtlpExporter`; `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME`
+come from the gitops chart). The edge is the first hop, so a request's trace starts here: the server span
+(not `/health`), YARP's forwarding span (`Yarp.ReverseProxy`, tagged `proxy.route_id`) and the call to the backend
+(`System.Net.Http`). The forwarded request carries `traceparent`, so the service behind joins the same trace.
+Metrics: request duration per route, runtime, HttpClient and rate limiting (`Microsoft.AspNetCore.RateLimiting`,
+including rejected requests).
+
 ## Run locally
 
 ```bash
