@@ -1,6 +1,10 @@
-# Sends /api/userservice/* to UserService running on this machine (its own docker compose, port 5001).
+# Override file: sends /api/userservice/* to UserService running on your own machine
+# (started from its own repo with docker compose, on port 5001). Use it together
+# with docker-compose.yml, see the top of that file.
 services:
   edge:
     environment:
+      # Your machine instead of the cluster.
       ReverseProxy__Clusters__userservice__Destinations__d1__Address: http://host.docker.internal:5001/
+      # Remove the service name, like the real edge does: /api/userservice/x -> /api/x.
       ReverseProxy__Routes__userservice__Transforms__0__PathPattern: "/api/{**rest}"
