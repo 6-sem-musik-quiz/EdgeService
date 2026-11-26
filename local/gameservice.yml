@@ -1,6 +1,10 @@
-# Sends /api/gameservice/* to GameService running on this machine (its own docker compose, port 5005).
+# Override file: sends /api/gameservice/* to GameService running on your own machine
+# (started from its own repo with docker compose, on port 5005). Use it together
+# with docker-compose.yml, see the top of that file.
 services:
   edge:
     environment:
+      # Your machine instead of the cluster.
       ReverseProxy__Clusters__gameservice__Destinations__d1__Address: http://host.docker.internal:5005/
+      # Remove the service name, like the real edge does: /api/gameservice/x -> /api/x.
       ReverseProxy__Routes__gameservice__Transforms__0__PathPattern: "/api/{**rest}"

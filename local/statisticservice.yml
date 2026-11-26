@@ -1,6 +1,10 @@
-# Sends /api/statisticservice/* to StatisticService running on this machine (its own docker compose, port 5003).
+# Override file: sends /api/statisticservice/* to StatisticService running on your own machine
+# (started from its own repo with docker compose, on port 5003). Use it together
+# with docker-compose.yml, see the top of that file.
 services:
   edge:
     environment:
+      # Your machine instead of the cluster.
       ReverseProxy__Clusters__statisticservice__Destinations__d1__Address: http://host.docker.internal:5003/
+      # Remove the service name, like the real edge does: /api/statisticservice/x -> /api/x.
       ReverseProxy__Routes__statisticservice__Transforms__0__PathPattern: "/api/{**rest}"
