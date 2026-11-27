@@ -23,14 +23,16 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.KnownProxies.Clear();
 });
 
-// One limit per client IP for every proxied route ("RateLimiterPolicy": "per-ip").
+// One limit per user (JWT sub) or, without a token, per client IP for every proxied route
+// (SCRUM-197, ADR-0005; see RateLimitKey). The policy keeps its old name "per-ip" so the routes in
+// appsettings.json are unchanged.
 var rateLimit = builder.Configuration.GetSection("RateLimit");
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("per-ip", context =>
         RateLimitPartition.GetFixedWindowLimiter(
-            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            EdgeService.Api.RateLimitKey.For(context),
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = rateLimit.GetValue("PermitLimit", 100),

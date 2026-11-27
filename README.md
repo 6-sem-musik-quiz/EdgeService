@@ -39,8 +39,10 @@ and a test case in `ProxyTests`.
 - **No special routing for GameService:** its games are in Redis
   ([ADR-0004](https://github.com/6-sem-musik-quiz/Platform/blob/main/docs/decisions/0004-gameservice-scaling.md)),
   so any GameService pod can serve any request, like the other services.
-- **Rate limiting**: 100 requests per 10 seconds per client IP (`RateLimit` in
-  `appsettings.json`), then `429 Too Many Requests`.
+- **Rate limiting**: 100 requests per 10 seconds (`RateLimit` in `appsettings.json`), then
+  `429 Too Many Requests`. Counted per user (the JWT's `sub`, from `Authorization: Bearer` or
+  `?access_token=`) and per client IP for requests without a token (SCRUM-197, ADR-0005,
+  `RateLimitKey.cs`). The token is only read, not validated; the services validate it.
 - **Forwarded headers**: the client's real IP and `https` from Cloudflare are passed on to the
   services as `X-Forwarded-For` / `X-Forwarded-Proto`.
 - **Request body size**: Kestrel's default limit (30,000,000 bytes, ~28.6 MiB, then
