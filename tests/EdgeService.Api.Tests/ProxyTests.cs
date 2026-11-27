@@ -62,11 +62,12 @@ public sealed class ProxyTests : IAsyncLifetime
         }
     }
 
-    private WebApplicationFactory<Program> Edge(int permitLimit = 100) =>
+    private WebApplicationFactory<Program> Edge(int permitLimit = 100, int ipCeiling = 1000) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Production"); // use appsettings.json, not the localhost ports
             builder.UseSetting("RateLimit:PermitLimit", permitLimit.ToString());
+            builder.UseSetting("RateLimit:IpCeiling", ipCeiling.ToString());
             foreach (var (service, address) in _addresses)
                 builder.UseSetting($"ReverseProxy:Clusters:{service}:Destinations:d1:Address", address);
         });
@@ -267,6 +268,33 @@ public sealed class ProxyTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    // Anyone can mint a token with a new sub per request (the edge does not check signatures), so a
+    // per-IP ceiling caps an IP however many subs it invents. Login and sign-up stay protected.
+    [Fact]
+    public async Task ForgedSubs_FromOneIp_HitTheIpCeiling()
+    {
+        await using var edge = Edge(permitLimit: 100, ipCeiling: 3);
+        var client = edge.CreateClient();
+
+        for (var i = 1; i <= 3; i++)
+            Assert.Equal(HttpStatusCode.OK, (await Send(client, "/api/userservice/auth/login", Jwt($"{i}"))).StatusCode);
+        var fourth = await Send(client, "/api/userservice/auth/login", Jwt("4"));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, fourth.StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_IsNotCountedAgainstTheIpCeiling()
+    {
+        await using var edge = Edge(ipCeiling: 1);
+        var client = edge.CreateClient();
+
+        await client.GetAsync("/health");
+        var second = await client.GetAsync("/health");
+
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
     }
 
     private static Task<HttpResponseMessage> Send(HttpClient client, string path, string bearer)

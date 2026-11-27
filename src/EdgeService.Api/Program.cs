@@ -30,6 +30,23 @@ var rateLimit = builder.Configuration.GetSection("RateLimit");
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // The edge does not check token signatures, so a client could invent a new sub per request and
+    // get a fresh per-user quota each time (also on login). This ceiling per client IP caps that,
+    // whatever the token says. It is high enough for many players behind one NAT, or 50+ load-test
+    // bots on one machine. The Kubernetes probes on /health are not counted.
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        context.Request.Path.StartsWithSegments("/health")
+            ? RateLimitPartition.GetNoLimiter("health")
+            : RateLimitPartition.GetFixedWindowLimiter(
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = rateLimit.GetValue("IpCeiling", 1000),
+                    Window = TimeSpan.FromSeconds(rateLimit.GetValue("WindowSeconds", 10)),
+                    QueueLimit = 0,
+                }));
+
     options.AddPolicy("per-ip", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             EdgeService.Api.RateLimitKey.For(context),

@@ -42,7 +42,9 @@ and a test case in `ProxyTests`.
 - **Rate limiting**: 100 requests per 10 seconds (`RateLimit` in `appsettings.json`), then
   `429 Too Many Requests`. Counted per user (the JWT's `sub`, from `Authorization: Bearer` or
   `?access_token=`) and per client IP for requests without a token (SCRUM-197, ADR-0005,
-  `RateLimitKey.cs`). The token is only read, not validated; the services validate it.
+  `RateLimitKey.cs`). The token is only read, not validated; the services validate it. Because a
+  client could invent a new `sub` per request, every client IP also has a ceiling of 1000 requests per
+  10 seconds (`RateLimit:IpCeiling`), whatever the token says; `/health` is not counted.
 - **Forwarded headers**: the client's real IP and `https` from Cloudflare are passed on to the
   services as `X-Forwarded-For` / `X-Forwarded-Proto`.
 - **Request body size**: Kestrel's default limit (30,000,000 bytes, ~28.6 MiB, then
