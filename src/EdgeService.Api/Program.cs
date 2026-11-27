@@ -1,10 +1,14 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
+using EdgeService.Api.Maintenance;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,6 +17,51 @@ builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 
 builder.Services.AddHealthChecks();
+
+// SCRUM-174/175/194: maintenance flags ("design to be disabled"). In Redis when a connection string is
+// set (the cluster), so every edge pod sees the same flags; in memory otherwise (local runs, tests).
+builder.Services.AddSingleton(TimeProvider.System);
+var redisConnection = builder.Configuration.GetConnectionString("Redis");
+if (string.IsNullOrWhiteSpace(redisConnection))
+{
+    builder.Services.AddSingleton<IMaintenanceStore, InMemoryMaintenanceStore>();
+}
+else
+{
+    builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    {
+        var options = ConfigurationOptions.Parse(redisConnection);
+        options.AbortOnConnectFail = false; // start and proxy even when Redis is down (flags fail open)
+        options.ConnectTimeout = 2000;
+        options.AsyncTimeout = 2000;
+        return ConnectionMultiplexer.Connect(options);
+    });
+    builder.Services.AddSingleton<IMaintenanceStore, RedisMaintenanceStore>();
+}
+
+// Only the admin endpoints need a user: JWT from UserService, validated like the other services.
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
+{
+    var signingKey = builder.Configuration["Jwt:SigningKey"];
+    options.MapInboundClaims = false;
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "slopster-userservice",
+        ValidateAudience = true,
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "slopster",
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        // Without a configured key no token validates, so the admin endpoints return 401.
+        IssuerSigningKey = string.IsNullOrEmpty(signingKey)
+            ? null
+            : new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(signingKey)),
+        ClockSkew = TimeSpan.FromSeconds(30),
+        RoleClaimType = "role",
+    };
+});
+builder.Services.AddAuthorization(options =>
+    options.AddPolicy(MaintenanceEndpoints.AdminPolicy, policy => policy.RequireRole("Admin")));
 
 // Cloudflare Tunnel (cloudflared) sits in front of us and sets X-Forwarded-For/-Proto.
 // The edge is only reachable from inside the cluster, so every proxy is trusted.
@@ -83,6 +132,11 @@ var app = builder.Build();
 app.UseForwardedHeaders();
 app.UseWebSockets(); // SignalR on /hubs/* goes through as WebSockets
 app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
+
+// SCRUM-194: refuse calls to a switched-off service with 503, before they are proxied.
+app.UseMaintenanceGate();
 
 // Kestrel rejects request bodies over ~28.6 MiB with 413. Admin song uploads
 // (POST /api/musicservice/playlists/{id}/songs, multipart mp3) are bigger, so only that
@@ -101,6 +155,7 @@ app.Use((context, next) =>
 // The edge's own endpoints live under /api/edge (public), plus /health for the Kubernetes probes.
 app.MapHealthChecks("/api/edge/health");
 app.MapHealthChecks("/health");
+app.MapMaintenance(); // SCRUM-175: /api/edge/maintenance
 
 // /api/<service>/<rest> -> http://<service>:8080/api/<rest> (routes in appsettings.json).
 app.MapReverseProxy();

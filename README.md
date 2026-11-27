@@ -65,6 +65,26 @@ come from the gitops chart). The edge is the first hop, so a request's trace sta
 Metrics: request duration per route, runtime, HttpClient and rate limiting (`Microsoft.AspNetCore.RateLimiting`,
 including rejected requests).
 
+
+## Maintenance: switching services off (SCRUM-174/175/194, "design to be disabled")
+
+An admin can switch each backend service off without a deploy; the rest of the game keeps working.
+
+- **Flags:** Redis hash `slopster:maintenance`, one field per switched-off service (`message`, `by`, `since`).
+  Each edge pod caches them for 2 s, so a change reaches every pod within that. Without
+  `ConnectionStrings:Redis` (local runs, tests) the flags are kept in memory. If Redis cannot be read,
+  every service counts as on (fail open).
+- **API:** `GET /api/edge/maintenance` (anyone; the frontend polls it) lists every service with
+  `off`, `message`, `by`, `since`. `PUT /api/edge/maintenance/{service}` with `{ "off": true, "message": "..." }`
+  or `{ "off": false }` needs a JWT with role `Admin` (same validation as the other services: `Jwt:SigningKey`).
+- **Gate:** a request to `/api/<service>/...` for a switched-off service gets `503` with ProblemDetails
+  (`type` `https://quiz.munkcloud.dk/problems/maintenance`, `detail` = the admin's message, `service`) and
+  `Retry-After: 30`, before it is proxied. Let through: `/hubs/*` (running lobbies and games keep their
+  connections), `/health`, `/admin/*`, and `/api/userservice/auth/*` (login, refresh, logout: the admin can
+  log in to switch the service back on, and logged-in players keep their session; the frontend blocks
+  login for players).
+- Calls inside the cluster do not pass the edge: GameService checks its own flag when LobbyService starts a game.
+
 ## Run locally
 
 ```bash
